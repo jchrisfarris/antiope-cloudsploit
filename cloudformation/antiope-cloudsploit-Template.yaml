@@ -1,0 +1,574 @@
+# Copyright 2020-2021 Chris Farris <chrisf@primeharbor.com>
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Deploy the Antiope CloudSploit integration stack
+Transform: AWS::Serverless-2016-10-31
+
+Parameters:
+
+  pAntiopeLambdaLayerArn:
+    Description: Arn of the Lambda layer created by the Main Antiope Stack
+    Type: String
+
+  pAWSRoleName:
+    Description: Default name of the AssumeRole to assume into accounts
+    Type: String
+    Default: Security-Audit
+
+  pDefaultLambdaSize:
+    Description: Size to assign to all Lambda
+    Type: Number
+    Default: 3008
+
+  pMaxLambdaDuration:
+    Description: How long to let the Lambda Run
+    Type: Number
+    Default: 300
+
+  pSplunkHECSecret:
+    Description: Secrets Manager Secret for the HEC Token & Endpoint (NONE to disable)
+    Type: String
+    Default: NONE
+
+  pQueueThreshold:
+    Description: SQS Queue size Threshold before the alarm fires
+    Type: String
+    Default: 1000
+
+  pDLQueueThreshold:
+    Description: SQS Queue size Threshold before the alarm fires for the DL Queue
+    Type: String
+    Default: 100
+
+  pQueueEncryption:
+    Type: String
+    Description: Enable Encryption for the SQS Queue
+    Default: False
+    AllowedValues:
+      - True
+      - False
+
+  pTemplateURL:
+    Description: URL to the Transformed Template this stack was deployed with (for promotion to another environment)
+    Type: String
+
+  pElasticClusterName:
+    Description: ElasticSearch Cluster Name
+    Type: String
+    Default: NONE
+
+  pElasticEndpoint:
+    Description: Cluster ClusterEndpoint
+    Type: String
+    Default: NONE
+
+  #
+  # Imported from the Antiope Bucket Stack
+  #
+  pS3EventTopicARN:
+    Description: ARN of the SNS Topic which will send Object notification events to SQS.
+    Type: String
+
+  pBucketName:
+    Description: Main Antiope Bucket Name
+    Type: String
+
+
+  #
+  # Imported from the Main Antiope Stack
+  #
+  pAccountTable:
+    Description: Name of Account Table from Antiope Inventory Stack
+    Type: String
+
+  pVPCTable:
+    Description: Name of VPC Table from Antiope Inventory Stack
+    Type: String
+
+  pBillingDataTable:
+    Description: Name of BillingData Table from Antiope Inventory Stack
+    Type: String
+
+  pTriggerAccountInventoryFunctionTopic:
+    Description: Topic for the AWS Account Inventory of Antiope
+    Type: String
+
+  pTriggerPayerInventoryFunctionTopic:
+    Description: Topic for the AWS Payer Inventory of Antiope
+    Type: String
+
+  #
+  # Antiope Error Handling
+  #
+  pErrorHandlerEventQueueName:
+    Description: Name of the Error Queue for the AWS Inventory Stack of Antiope
+    Type: String
+
+  pErrorHandlerEventQueueURL:
+    Description: URL of the Error Queue for the AWS Inventory Stack of Antiope
+    Type: String
+
+  pSNSAlertsInfoArn:
+    Description: SNS Topic Arn to Send Info Alerts (Leave as NONE for no info alerts)
+    Type: String
+    Default: NONE
+
+  pSNSAlertsErrorArn:
+    Description: SNS Topic Arn to Send Error Alerts (Leave as NONE for no error alerts)
+    Type: String
+    Default: NONE
+
+Conditions:
+  cCreateSplunk: !Not [!Equals [ !Ref pSplunkHECSecret, "NONE" ]]
+  cCreateElasticSearch: !Not [!Equals [ !Ref pElasticClusterName, "NONE" ]]
+  cEncryptionEnabled: !Equals [ !Ref pQueueEncryption, True ]
+
+Globals:
+  Function:
+    Runtime: python3.7
+    MemorySize: !Ref pDefaultLambdaSize
+    Timeout: !Ref pMaxLambdaDuration
+    Layers:
+      - !Ref pAntiopeLambdaLayerArn
+    Environment:
+      Variables:
+          ROLE_SESSION_NAME: !Ref AWS::StackName
+          INVENTORY_BUCKET: !Ref pBucketName
+          ACCOUNT_TABLE: !Ref pAccountTable
+          VPC_TABLE: !Ref pVPCTable
+          ROLE_NAME: !Ref pAWSRoleName
+          ERROR_QUEUE: !Ref pErrorHandlerEventQueueURL
+          LOG_LEVEL: 'INFO'
+          ES_DOMAIN_ENDPOINT: !Ref pElasticEndpoint
+
+Resources:
+
+  CloudSploitLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: /
+      Policies:
+      - PolicyName: S3Access
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Action:
+            - s3:*
+            Effect: Allow
+            Resource:
+              - !Sub "arn:aws:s3:::${pBucketName}/*"
+              - !Sub "arn:aws:s3:::${pBucketName}"
+          - Action:
+            - s3:ListAllMyBuckets
+            - s3:GetBucketLocation
+            Effect: Allow
+            Resource: '*'
+      - PolicyName: LambdaLogging
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Resource: '*'
+            Action:
+            - logs:*
+            Effect: Allow
+      - PolicyName: DynamoAccess
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Resource:
+            - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${pAccountTable}"
+            - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${pVPCTable}"
+            - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${pVPCTable}/index/*"
+            - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${pBillingDataTable}"
+            - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${pBillingDataTable}/index/*"
+            Action:
+            - dynamodb:*
+            Effect: Allow
+      - PolicyName: AssumeCrossAccountRole
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: "Allow"
+            Action:
+            - sts:AssumeRole
+            Resource: !Sub "arn:aws:iam::*:role/${pAWSRoleName}"
+      - PolicyName: ElasticSearch
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Resource: !Sub "arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/${pElasticClusterName}/*"
+            Action:
+            - es:*
+            Effect: Allow
+      - PolicyName: PublishToErrorQueueSQS
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: "Allow"
+            Action:
+            - sqs:SendMessage
+            - sqs:ReceiveMessage
+            - sqs:DeleteMessage
+            Resource:
+              - !Sub "arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:${pErrorHandlerEventQueueName}"
+      - PolicyName: DescribeRegions
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: "Allow"
+            Action:
+            - ec2:DescribeRegions
+            Resource: "*"
+      # Add additional permissions needed here
+      # - PolicyName: CloudSploitIngestSQSAccess
+      #   PolicyDocument:
+      #     Version: '2012-10-17'
+      #     Statement:
+      #     - Sid: SQSAccess
+      #       Action:
+      #       - sqs:DeleteMessage
+      #       - sqs:GetQueueUrl
+      #       - sqs:ReceiveMessage
+      #       - sqs:SendMessage
+      #       - sqs:GetQueueAttributes
+      #       - sqs:ListQueues
+      #       Resource:
+      #       - !If [cCreateSplunk, !GetAtt SplunkEventQueue.Arn, !Ref AWS::NoValue ]
+      #       - !If [cCreateElasticSearch, !GetAtt ElasticSearchEventQueue.Arn, !Ref AWS::NoValue ]
+      #       Effect: Allow
+      #     - Sid: ListQueues
+      #       Action:
+      #       - sqs:ListQueues
+      #       Resource:
+      #       - "*"
+      #       Effect: Allow
+      #     - Sid: KMS
+      #       Action:
+      #       - kms:GenerateDataKey*
+      #       - kms:Decrypt
+      #       Effect: Allow
+      #       Resource:
+      #       - !If
+      #         - cEncryptionEnabled
+      #         - !GetAtt QueueKMSKey.Arn
+      #         - !Sub "arn:aws:kms:us-east-1:${AWS::AccountId}:key/thiskeydoesntexist"
+
+  #
+  # Lambda Functions
+  #
+
+  CloudSploitInvokeLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-invoke-cloudsploit"
+      Description: Parse Antiope message and call the CloudSploit Lambda
+      Handler: invoke-cloudsploit.handler
+      Role: !GetAtt CloudSploitLambdaRole.Arn
+      CodeUri: ../lambda
+
+  ElasticSearchIngestLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-cloudsploit-es-ingest"
+      Description: Parse CloudSploit output and push to ElasticSearch
+      Handler: parse-elasticsearch.handler
+      Role: !GetAtt CloudSploitLambdaRole.Arn
+      CodeUri: ../lambda
+
+  SplunkIngestLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-cloudsploit-splunk-ingest"
+      Description: Parse CloudSploit output and push to Splunk
+      Handler: parse-splunk.handler
+      Role: !GetAtt CloudSploitLambdaRole.Arn
+      CodeUri: ../lambda
+
+###################################
+
+  QueueKMSKey:
+    Type: AWS::KMS::Key
+    Condition: cEncryptionEnabled
+    Properties:
+      Description: !Sub KMS Key for SQS in ${AWS::StackName}
+      Enabled: True
+      EnableKeyRotation: True
+      KeyPolicy:
+        Version: "2012-10-17"
+        Id: "allow-iam"
+        Statement:
+          - Sid: "Allow everyone use of the key"
+            Effect: "Allow"
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action:
+              - "kms:*"
+            Resource: "*"
+          - Sid: "Allow service use of the key"
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "s3.amazonaws.com"
+                - "sqs.amazonaws.com"
+                - "lambda.amazonaws.com"
+                # Added per https://aws.amazon.com/premiumsupport/knowledge-center/sns-topic-sqs-queue-sse-cmk-policy/ to support the S3 Event->SNS->SQS workflow
+                - "sns.amazonaws.com"
+            Action:
+              - "kms:GenerateDataKey*"
+              - "kms:Decrypt"
+            Resource: "*"
+
+  #
+  # ElasticSearch SQS
+  #
+  ElasticSearchDLEventQueue:
+    Type: AWS::SQS::Queue
+    Condition: cCreateElasticSearch
+    Properties:
+      KmsMasterKeyId:
+        Fn::If:
+          - cEncryptionEnabled
+          - Ref: QueueKMSKey
+          - Ref: AWS::NoValue
+      KmsDataKeyReusePeriodSeconds:
+        Fn::If:
+          - cEncryptionEnabled
+          - 86400
+          - Ref: AWS::NoValue
+
+  ElasticSearchEventQueue:
+    Type: AWS::SQS::Queue
+    Condition: cCreateElasticSearch
+    Properties:
+      RedrivePolicy:
+        maxReceiveCount: 2
+        deadLetterTargetArn: !GetAtt ElasticSearchDLEventQueue.Arn
+      KmsMasterKeyId:
+        Fn::If:
+          - cEncryptionEnabled
+          - Ref: QueueKMSKey
+          - Ref: AWS::NoValue
+      KmsDataKeyReusePeriodSeconds:
+        Fn::If:
+          - cEncryptionEnabled
+          - 86400
+          - Ref: AWS::NoValue
+
+  ElasticSearchEventQueueSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: cCreateElasticSearch
+    Properties:
+      Endpoint: !GetAtt ElasticSearchEventQueue.Arn
+      Protocol: sqs
+      pS3EventTopicARN: !Ref pS3EventTopicARN
+
+  ElasticSearchEventQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Condition: cCreateElasticSearch
+    Properties:
+      Queues:
+      - !Ref ElasticSearchEventQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: Allow-SNS-SendMessage
+          Effect: Allow
+          Principal: "*"
+          Action:
+          - sqs:SendMessage
+          Resource: !GetAtt ElasticSearchEventQueue.Arn
+          Condition:
+            ArnEquals:
+              aws:SourceArn: !Ref pS3EventTopicARN
+
+  #
+  # Splunk SQS
+  #
+  SplunkDLEventQueue:
+    Type: AWS::SQS::Queue
+    Condition: cCreateSplunk
+    Properties:
+      KmsMasterKeyId:
+        Fn::If:
+          - cEncryptionEnabled
+          - Ref: QueueKMSKey
+          - Ref: AWS::NoValue
+      KmsDataKeyReusePeriodSeconds:
+        Fn::If:
+          - cEncryptionEnabled
+          - 86400
+          - Ref: AWS::NoValue
+
+  SplunkEventQueue:
+    Type: AWS::SQS::Queue
+    Condition: cCreateSplunk
+    Properties:
+      VisibilityTimeout: 300
+      RedrivePolicy:
+        maxReceiveCount: 2
+        deadLetterTargetArn: !GetAtt SplunkDLEventQueue.Arn
+      KmsMasterKeyId:
+        Fn::If:
+          - cEncryptionEnabled
+          - Ref: QueueKMSKey
+          - Ref: AWS::NoValue
+      KmsDataKeyReusePeriodSeconds:
+        Fn::If:
+          - cEncryptionEnabled
+          - 86400
+          - Ref: AWS::NoValue
+
+  SplunkEventQueueSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: cCreateSplunk
+    Properties:
+      Endpoint: !GetAtt SplunkEventQueue.Arn
+      Protocol: sqs
+      pS3EventTopicARN: !Ref pS3EventTopicARN
+
+  SplunkEventQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Condition: cCreateSplunk
+    Properties:
+      Queues:
+      - !Ref SplunkEventQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: Allow-SNS-SendMessage
+          Effect: Allow
+          Principal: "*"
+          Action:
+          - sqs:SendMessage
+          Resource: !GetAtt SplunkEventQueue.Arn
+          Condition:
+            ArnEquals:
+              aws:SourceArn: !Ref pS3EventTopicARN
+
+  #
+  # Alarms
+  #
+  ElasticSearchQueueAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: cCreateElasticSearch
+    Properties:
+      ActionsEnabled: True
+      AlarmActions:
+        - !Ref pSNSAlertsErrorArn
+      AlarmDescription: "Alert when ElasticSearch Queue hits Threshold"
+      AlarmName: !Sub "${AWS::StackName}-ElasticSearchQueueAlarm"
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt ElasticSearchEventQueue.QueueName
+      EvaluationPeriods: 1
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: AWS/SQS
+      OKActions:
+        - !Ref pSNSAlertsInfoArn
+      Period: 300
+      Statistic: Average
+      Threshold: !Ref pQueueThreshold
+      TreatMissingData: missing
+
+  ElasticSearchDLQueueAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: cCreateElasticSearch
+    Properties:
+      ActionsEnabled: True
+      AlarmActions:
+        - !Ref pSNSAlertsErrorArn
+      AlarmDescription: "Alert when ElasticSearch DL Queue hits Threshold"
+      AlarmName: !Sub "${AWS::StackName}-ElasticSearchDLQueueAlarm"
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt ElasticSearchDLEventQueue.QueueName
+      EvaluationPeriods: 1
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: AWS/SQS
+      OKActions:
+        - !Ref pSNSAlertsInfoArn
+      Period: 300
+      Statistic: Average
+      Threshold: !Ref pDLQueueThreshold
+      TreatMissingData: missing
+
+  SplunkQueueAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: cCreateSplunk
+    Properties:
+      ActionsEnabled: True
+      AlarmActions:
+        - !Ref pSNSAlertsErrorArn
+      AlarmDescription: "Alert when Splunk Queue hits Threshold"
+      AlarmName: !Sub "${AWS::StackName}-SplunkQueueAlarm"
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt SplunkEventQueue.QueueName
+      EvaluationPeriods: 1
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: AWS/SQS
+      OKActions:
+        - !Ref pSNSAlertsInfoArn
+      Period: 300
+      Statistic: Average
+      Threshold: !Ref pQueueThreshold
+      TreatMissingData: missing
+
+  SplunkDLQueueAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: cCreateSplunk
+    Properties:
+      ActionsEnabled: True
+      AlarmActions:
+        - !Ref pSNSAlertsErrorArn
+      AlarmDescription: "Alert when Splunk DL Queue hits Threshold"
+      AlarmName: !Sub "${AWS::StackName}-SplunkDLQueueAlarm"
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt SplunkDLEventQueue.QueueName
+      EvaluationPeriods: 1
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: AWS/SQS
+      OKActions:
+        - !Ref pSNSAlertsInfoArn
+      Period: 300
+      Statistic: Average
+      Threshold: !Ref pDLQueueThreshold
+      TreatMissingData: missing
+
+
+##################################
+Outputs:
+  StackName:
+    Value: !Ref AWS::StackName
+    Description: Just the name of this stack
+
+  TemplateURL:
+    Description: URL to the Transformed Template this stack was deployed with (for promotion to another environment)
+    Value: !Ref pTemplateURL
+
