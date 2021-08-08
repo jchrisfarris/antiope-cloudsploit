@@ -18,9 +18,18 @@ Transform: AWS::Serverless-2016-10-31
 
 Parameters:
 
+  pContainerTag:
+    Description: Tag for the CloudSploit container in ECR
+    Type: String
+
   pAntiopeLambdaLayerArn:
     Description: Arn of the Lambda layer created by the Main Antiope Stack
     Type: String
+
+  pBucketPrefix:
+    Description: The prefix to upload the scan reports under
+    Type: String
+    Default: CloudSploit
 
   pAWSRoleName:
     Description: Default name of the AssumeRole to assume into accounts
@@ -140,8 +149,6 @@ Globals:
     Runtime: python3.7
     MemorySize: !Ref pDefaultLambdaSize
     Timeout: !Ref pMaxLambdaDuration
-    Layers:
-      - !Ref pAntiopeLambdaLayerArn
     Environment:
       Variables:
           ROLE_SESSION_NAME: !Ref AWS::StackName
@@ -221,17 +228,6 @@ Resources:
             Action:
             - es:*
             Effect: Allow
-      - PolicyName: PublishToErrorQueueSQS
-        PolicyDocument:
-          Version: '2012-10-17'
-          Statement:
-          - Effect: "Allow"
-            Action:
-            - sqs:SendMessage
-            - sqs:ReceiveMessage
-            - sqs:DeleteMessage
-            Resource:
-              - !Sub "arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:${pErrorHandlerEventQueueName}"
       - PolicyName: DescribeRegions
         PolicyDocument:
           Version: '2012-10-17'
@@ -241,69 +237,106 @@ Resources:
             - ec2:DescribeRegions
             Resource: "*"
       # Add additional permissions needed here
-      # - PolicyName: CloudSploitIngestSQSAccess
-      #   PolicyDocument:
-      #     Version: '2012-10-17'
-      #     Statement:
-      #     - Sid: SQSAccess
-      #       Action:
-      #       - sqs:DeleteMessage
-      #       - sqs:GetQueueUrl
-      #       - sqs:ReceiveMessage
-      #       - sqs:SendMessage
-      #       - sqs:GetQueueAttributes
-      #       - sqs:ListQueues
-      #       Resource:
-      #       - !If [cCreateSplunk, !GetAtt SplunkEventQueue.Arn, !Ref AWS::NoValue ]
-      #       - !If [cCreateElasticSearch, !GetAtt ElasticSearchEventQueue.Arn, !Ref AWS::NoValue ]
-      #       Effect: Allow
-      #     - Sid: ListQueues
-      #       Action:
-      #       - sqs:ListQueues
-      #       Resource:
-      #       - "*"
-      #       Effect: Allow
-      #     - Sid: KMS
-      #       Action:
-      #       - kms:GenerateDataKey*
-      #       - kms:Decrypt
-      #       Effect: Allow
-      #       Resource:
-      #       - !If
-      #         - cEncryptionEnabled
-      #         - !GetAtt QueueKMSKey.Arn
-      #         - !Sub "arn:aws:kms:us-east-1:${AWS::AccountId}:key/thiskeydoesntexist"
+      - PolicyName: CloudSploitIngestSQSAccess
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Sid: SQSAccess
+            Action:
+            - sqs:DeleteMessage
+            - sqs:GetQueueUrl
+            - sqs:ReceiveMessage
+            - sqs:SendMessage
+            - sqs:GetQueueAttributes
+            - sqs:ListQueues
+            Resource:
+            - !If [cCreateSplunk, !GetAtt SplunkEventQueue.Arn, !Ref AWS::NoValue ]
+            - !If [cCreateElasticSearch, !GetAtt ElasticSearchEventQueue.Arn, !Ref AWS::NoValue ]
+            - !Sub "arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:${pErrorHandlerEventQueueName}"
+            Effect: Allow
+          - Sid: ListQueues
+            Action:
+            - sqs:ListQueues
+            Resource:
+            - "*"
+            Effect: Allow
+          - Sid: KMS
+            Action:
+            - kms:GenerateDataKey*
+            - kms:Decrypt
+            Effect: Allow
+            Resource:
+            - !If
+              - cEncryptionEnabled
+              - !GetAtt QueueKMSKey.Arn
+              - !Sub "arn:aws:kms:us-east-1:${AWS::AccountId}:key/thiskeydoesntexist"
 
   #
   # Lambda Functions
   #
 
-  CloudSploitInvokeLambdaFunction:
-    Type: AWS::Serverless::Function
+  CloudSploitInvokeLambdaContainerFunction:
+    Type: AWS::Lambda::Function
     Properties:
-      FunctionName: !Sub "${AWS::StackName}-invoke-cloudsploit"
-      Description: Parse Antiope message and call the CloudSploit Lambda
-      Handler: invoke-cloudsploit.handler
+      FunctionName: !Sub "${AWS::StackName}-scanning-container"
+      Description: Parse the antiope message and call CloudSploit
+      MemorySize: 3072
+      Timeout: 600
       Role: !GetAtt CloudSploitLambdaRole.Arn
-      CodeUri: ../lambda
+      PackageType: Image
+      Code:
+        ImageUri: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/antiope-cloudsploit:${pContainerTag}
+      Environment:
+        Variables:
+          ROLE_SESSION_NAME: !Ref AWS::StackName
+          INVENTORY_BUCKET: !Ref pBucketName
+          ACCOUNT_TABLE: !Ref pAccountTable
+          VPC_TABLE: !Ref pVPCTable
+          ROLE_NAME: !Ref pAWSRoleName
+          ERROR_QUEUE: !Ref pErrorHandlerEventQueueURL
+          LOG_LEVEL: 'DEBUG'
+          ES_DOMAIN_ENDPOINT: !Ref pElasticEndpoint
+
 
   ElasticSearchIngestLambdaFunction:
     Type: AWS::Serverless::Function
+    Condition: cCreateElasticSearch
     Properties:
       FunctionName: !Sub "${AWS::StackName}-cloudsploit-es-ingest"
       Description: Parse CloudSploit output and push to ElasticSearch
       Handler: parse-elasticsearch.handler
       Role: !GetAtt CloudSploitLambdaRole.Arn
       CodeUri: ../lambda
+      Layers:
+        - !Ref pAntiopeLambdaLayerArn
+      Events:
+        BatchWriteResources:
+          Type: SQS
+          Properties:
+            BatchSize: 500
+            MaximumBatchingWindowInSeconds: 30
+            Queue: !GetAtt ElasticSearchEventQueue.Arn
 
   SplunkIngestLambdaFunction:
     Type: AWS::Serverless::Function
+    Condition: cCreateSplunk
     Properties:
       FunctionName: !Sub "${AWS::StackName}-cloudsploit-splunk-ingest"
       Description: Parse CloudSploit output and push to Splunk
       Handler: parse-splunk.handler
       Role: !GetAtt CloudSploitLambdaRole.Arn
       CodeUri: ../lambda
+      Layers:
+        - !Ref pAntiopeLambdaLayerArn
+      Events:
+        BatchWriteResources:
+          Type: SQS
+          Properties:
+            BatchSize: 500
+            MaximumBatchingWindowInSeconds: 30
+            Queue: !GetAtt SplunkEventQueue.Arn
+
+
 
 ###################################
 
