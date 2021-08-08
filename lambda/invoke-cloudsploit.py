@@ -68,7 +68,7 @@ def handler(event, context):
         try:
 
             # Store the scan results back into the antiope bucket
-            with open(f"/tmp/{target_account.account_id}-results.json", 'r') as bucket_data:
+            with open(f"/tmp/{target_account.account_id}-results.json", 'rb') as bucket_data:
                 response = s3_client.put_object(
                     ACL='bucket-owner-full-control',
                     Body=bucket_data,
@@ -81,7 +81,7 @@ def handler(event, context):
             # Keep a daily historical record of the results and collections
             # Place that into the STANDARD_IA for cost savings
             #
-            with open(f"/tmp/{target_account.account_id}-results.json", 'r') as bucket_data:
+            with open(f"/tmp/{target_account.account_id}-results.json", 'rb') as bucket_data:
                 response = s3_client.put_object(
                     ACL='bucket-owner-full-control',
                     Body=bucket_data,
@@ -91,7 +91,7 @@ def handler(event, context):
                     StorageClass='STANDARD_IA'
                 )
 
-            with open(f"/tmp/{target_account.account_id}-collection.json", 'r') as bucket_data:
+            with open(f"/tmp/{target_account.account_id}-collection.json", 'rb') as bucket_data:
                 response = s3_client.put_object(
                     ACL='bucket-owner-full-control',
                     Body=bucket_data,

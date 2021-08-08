@@ -272,9 +272,8 @@ Resources:
               - !Sub "arn:aws:kms:us-east-1:${AWS::AccountId}:key/thiskeydoesntexist"
 
   #
-  # Lambda Functions
+  # Container based Lambda Function
   #
-
   CloudSploitInvokeLambdaContainerFunction:
     Type: AWS::Lambda::Function
     Properties:
@@ -297,6 +296,9 @@ Resources:
           LOG_LEVEL: 'DEBUG'
           ES_DOMAIN_ENDPOINT: !Ref pElasticEndpoint
 
+  #
+  # Serverless Lambda Functions
+  #
 
   ElasticSearchIngestLambdaFunction:
     Type: AWS::Serverless::Function
@@ -605,3 +607,6 @@ Outputs:
     Description: URL to the Transformed Template this stack was deployed with (for promotion to another environment)
     Value: !Ref pTemplateURL
 
+  ContainerTag:
+    Description: Version of the CloudSploit Container in ECR. Needed if you want to promote this stack across environments
+    Value: pContainerTag

@@ -24,6 +24,11 @@ ifndef version
 	export version := $(shell date +%Y%b%d-%H%M)
 endif
 
+# We may need this in future places
+# See https://stackoverflow.com/questions/2019989/how-to-assign-the-output-of-a-command-to-a-makefile-variable#answer-54776239
+GET_ACCOUNT_ID = $(shell aws sts get-caller-identity --query 'Account' --output text)
+CALL_GET_ACCOUNT_ID = $(eval ACCOUNT_ID=$(GET_ACCOUNT_ID))
+
 #
 # CloudSploit Settings
 #
@@ -46,7 +51,7 @@ package: test deps
 	@aws cloudformation package --template-file $(CLOUDSPLOIT_TEMPLATE) --s3-bucket $(BUCKET) --s3-prefix $(DEPLOY_PREFIX)/transform --output-template-file cloudformation/$(CLOUDSPLOIT_OUTPUT_TEMPLATE)  --metadata build_ver=$(version)
 	@aws s3 cp cloudformation/$(CLOUDSPLOIT_OUTPUT_TEMPLATE) s3://$(BUCKET)/$(DEPLOY_PREFIX)/
 
-deploy: package
+deploy: package container-build container-push
 ifndef CLOUDSPLOIT_MANIFEST
 	$(error CLOUDSPLOIT_MANIFEST is not set)
 endif
@@ -68,17 +73,20 @@ endif
 container-build: deps
 	docker build -t antiope-cloudsploit:$(version)  .
 
+# Note - to use this target the Env vars ACCOUNT_TABLE, VPC_TABLE, ROLE_NAME and ROLE_NAME must be set in your config.ENV
+# Additionally AWS_DEFAULT_REGION, AWS_SECRET_ACCESS_KEY and  AWS_ACCESS_KEY_ID must be in the environment rather than in the credentials file
 container-test:
 	docker run -p 9000:8080  -e ROLE_SESSION_NAME=Cloudsploit \
-		-e INVENTORY_BUCKET=pht-antiope -e ROLE_NAME=pht-audit -e LOG_LEVEL=DEBUG \
-		-e ACCOUNT_TABLE=pht-antiope-prod-aws-inventory-accounts -e VPC_TABLE=pht-antiope-prod-aws-inventory-vpc-inventory \
-		-e ERROR_QUEUE=https://sqs.us-east-1.amazonaws.com/657777729964/pht-antiope-prod-ErrorHandlerEventQueue-57VXJ6ZZ0WXH \
+		-e INVENTORY_BUCKET=$(BUCKET) -e LOG_LEVEL=DEBUG \
+		-e ACCOUNT_TABLE -e VPC_TABLE -e ROLE_NAME -e ERROR_QUEUE \
 		-e AWS_DEFAULT_REGION -e AWS_SECRET_ACCESS_KEY -e AWS_ACCESS_KEY_ID \
 		antiope-cloudsploit:$(version)
 
+# To trigger the test container:
+# curl -XPOST "http://localhost:9000/2015-03-31/functions/function/invocations" -d @SAMPLEEVENT.json
 
-container-push: container-build
-	ACCOUNT_ID := $(shell aws sts get-caller-identity --query 'Account' --output text)
+container-push:
+	$(CALL_GET_ACCOUNT_ID)
 	docker tag antiope-cloudsploit:$(version) $(ACCOUNT_ID).dkr.ecr.$(AWS_DEFAULT_REGION).amazonaws.com/antiope-cloudsploit:$(version)
 	aws ecr get-login-password | docker login --username AWS --password-stdin $(ACCOUNT_ID).dkr.ecr.$(AWS_DEFAULT_REGION).amazonaws.com
 	docker push $(ACCOUNT_ID).dkr.ecr.$(AWS_DEFAULT_REGION).amazonaws.com/antiope-cloudsploit:$(version)
