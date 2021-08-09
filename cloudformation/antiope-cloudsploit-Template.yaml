@@ -296,10 +296,25 @@ Resources:
           LOG_LEVEL: 'DEBUG'
           ES_DOMAIN_ENDPOINT: !Ref pElasticEndpoint
 
+  # The old way of doing Lambda from SNS required both a Subscription, and
+  # explicit permission for SNS to invoke the lambda
+  CloudSploitInvokeLambdaContainerSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint: !GetAtt CloudSploitInvokeLambdaContainerFunction.Arn
+      Protocol: lambda
+      TopicArn: !Ref pTriggerAccountInventoryFunctionTopic
+  CloudSploitInvokeLambdaContainerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt CloudSploitInvokeLambdaContainerFunction.Arn
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref pTriggerAccountInventoryFunctionTopic
+      Action: lambda:invokeFunction
+
   #
   # Serverless Lambda Functions
   #
-
   ElasticSearchIngestLambdaFunction:
     Type: AWS::Serverless::Function
     Condition: cCreateElasticSearch

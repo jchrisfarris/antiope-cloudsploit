@@ -24,6 +24,10 @@ ifndef version
 	export version := $(shell date +%Y%b%d-%H%M)
 endif
 
+ifndef CONTAINER_TAG
+	export CONTAINER_TAG=$(version)
+endif
+
 # We may need this in future places
 # See https://stackoverflow.com/questions/2019989/how-to-assign-the-output-of-a-command-to-a-makefile-variable#answer-54776239
 GET_ACCOUNT_ID = $(shell aws sts get-caller-identity --query 'Account' --output text)
@@ -51,11 +55,15 @@ package: test deps
 	@aws cloudformation package --template-file $(CLOUDSPLOIT_TEMPLATE) --s3-bucket $(BUCKET) --s3-prefix $(DEPLOY_PREFIX)/transform --output-template-file cloudformation/$(CLOUDSPLOIT_OUTPUT_TEMPLATE)  --metadata build_ver=$(version)
 	@aws s3 cp cloudformation/$(CLOUDSPLOIT_OUTPUT_TEMPLATE) s3://$(BUCKET)/$(DEPLOY_PREFIX)/
 
-deploy: package container-build container-push
+deploy: package container-build container-push cft-deploy
+
+serverless-deploy: package cft-deploy
+
+cft-deploy:
 ifndef CLOUDSPLOIT_MANIFEST
 	$(error CLOUDSPLOIT_MANIFEST is not set)
 endif
-	cft-deploy -m ../Manifests/$(CLOUDSPLOIT_MANIFEST) --template-url $(CLOUDSPLOIT_TEMPLATE_URL) pTemplateURL=$(CLOUDSPLOIT_TEMPLATE_URL) pBucketName=$(BUCKET) pContainerTag=$(version) --force
+	cft-deploy -m ../Manifests/$(CLOUDSPLOIT_MANIFEST) --template-url $(CLOUDSPLOIT_TEMPLATE_URL) pTemplateURL=$(CLOUDSPLOIT_TEMPLATE_URL) pBucketName=$(BUCKET) pContainerTag=$(CONTAINER_TAG) --force
 
 promote:
 ifndef template
