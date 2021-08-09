@@ -72,7 +72,7 @@ endif
 ifndef CLOUDSPLOIT_MANIFEST
 	$(error CLOUDSPLOIT_MANIFEST is not set)
 endif
-	cft-deploy -m ../Manifests/$(CLOUDSPLOIT_MANIFEST) --template-url $(template) pTemplateURL=$(template) pBucketName=$(BUCKET) --force
+	cft-deploy -m ../Manifests/$(CLOUDSPLOIT_MANIFEST) --template-url $(template) pTemplateURL=$(template) pBucketName=$(BUCKET) pContainerTag=$(CONTAINER_TAG) --force
 
 
 #
