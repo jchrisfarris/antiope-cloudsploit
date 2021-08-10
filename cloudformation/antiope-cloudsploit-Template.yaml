@@ -362,7 +362,7 @@ Resources:
           Type: SQS
           Properties:
             BatchSize: 500
-            MaximumBatchingWindowInSeconds: 30
+            MaximumBatchingWindowInSeconds: !Ref pMaxLambdaDuration
             Queue: !GetAtt SplunkEventQueue.Arn
 
 

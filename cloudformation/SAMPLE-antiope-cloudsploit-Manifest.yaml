@@ -1,0 +1,141 @@
+# Copyright 2021 Chris Farris <chrisf@primeharbor.com>
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Template Description: Deploy the Antiope CloudSploit integration stack
+
+# These control how and where the cloudformation is executed
+StackName: YOURCOMPANY-antiope-cloudsploit-ENVIRONMENT
+
+Region: us-east-1
+TimeOut: 15m
+TerminationProtection: false
+
+# Either DisableRollback or OnFailure can be specified, not both.
+OnFailure: DELETE # accepts DO_NOTHING, ROLLBACK, DELETE
+# DisableRollback: true
+
+# Parameters:
+# There are two kinds of parameters, regular and sourced.
+# Regular parameters are static and defined in the Parameters: section of this yaml file
+# Sourced are parameters that cft-deploy will go and fetch from other Stacks that are referenced in the DependentStacks section.
+
+
+###########
+# Parameters to the cloudformation stack that are defined manually.
+###########
+Parameters:
+
+  # SNS Topic Arn to Send Error Alerts (Leave as NONE for no error alerts)
+  pSNSAlertsErrorArn: NONE
+
+  # SNS Topic Arn to Send Info Alerts (Leave as NONE for no info alerts)
+  pSNSAlertsInfoArn: NONE
+
+  # Enable Encryption for the SQS Queue
+  pQueueEncryption: false
+
+  # Size to assign to all Lambda
+  pDefaultLambdaSize: 3008
+
+  # SQS Queue size Threshold before the alarm fires for the DL Queue
+  pDLQueueThreshold: 100
+
+  # How long to let the Lambda Run
+  pMaxLambdaDuration: 300
+
+  # SQS Queue size Threshold before the alarm fires
+  pQueueThreshold: 1000
+
+  # Secrets Manager Secret for the HEC Token & Endpoint (NONE to disable)
+  pSplunkHECSecret: NONE
+
+###########
+# These stacks are needed by the SourcedParameters section
+###########
+DependentStacks:
+  antiope-main: YOURCOMPANY-antiope-ENVIRONMENT
+  antiope-aws: YOURCOMPANY-antiope-ENVIRONMENT-AWSInventoryStack-THISCODEISUNIQIE
+  antiope-bucket: YOURCOMPANY-antiope-bucket-ENVIRONMENT
+  # comment out this next line if not using ElasticSearch (and the two lines under SourcedParameters)
+  antiope-elastic: YOURCOMPANY-antiope-ENVIRONMENT-ElasticSearchStack-THISCODEISUNIQIE
+
+
+###########
+# Parameters that come from other deployed stacks.
+# Valid Sections are Resources, Outputs Parameters
+#
+# Hint. Get your list of resources this way:
+# aws cloudformation describe-stack-resources --stack-name stack_name_for_other_stack --output text
+SourcedParameters:
+
+  # URL of the Error Queue for the AWS Inventory Stack of Antiope
+  pErrorHandlerEventQueueURL: antiope-main.Outputs.ErrorQueueURL
+
+  # Name of the Error Queue for the AWS Inventory Stack of Antiope
+  pErrorHandlerEventQueueName: antiope-main.Outputs.ErrorQueue
+
+  # Topic for the AWS Account Inventory of Antiope
+  pTriggerAccountInventoryFunctionTopic: antiope-aws.Outputs.AccountInventoryTriggerTopic
+
+  # Topic for the AWS Payer Inventory of Antiope
+  pTriggerPayerInventoryFunctionTopic: antiope-aws.Outputs.PayerInventoryTriggerTopic
+
+  # Name of Account Table from Antiope Inventory Stack
+  pAccountTable: antiope-aws.Resources.AccountDBTable
+
+  # Name of VPC Table from Antiope Inventory Stack
+  pVPCTable: antiope-aws.Resources.VpcInventoryDBTable
+
+  # Name of BillingData Table from Antiope Inventory Stack
+  pBillingDataTable: antiope-aws.Resources.HistoricalBillingDataTable
+
+  # Default name of the AssumeRole to assume into accounts
+  pAWSRoleName: antiope-main.Parameters.pAWSRoleName
+
+  # Object Key for the Antiope Python Dependencies Lambda Layer
+  pAntiopeLambdaLayerArn: antiope-main.Resources.AWSInventoryLambdaLayer
+
+  # comment out these two lines if not using ElasticSearch
+  pElasticClusterName: antiope-elastic.Outputs.ClusterName
+  pElasticEndpoint: antiope-elastic.Outputs.ClusterEndpoint
+
+  # ARN of the SNS Topic which will send Object notification events to SQS.
+  pS3EventTopicARN: antiope-bucket.Outputs.CloudsploitNotificationTopicArn
+
+  # Main Antiope Bucket Name
+  pBucketName: antiope-bucket.Parameters.pBucketName
+
+
+###########
+# Tags that apply to the stack. Will be inherited by some resources.
+###########
+Tags:
+  Name: YOURCOMPANY-antiope-cloudsploit-ENVIRONMENT
+
+###########
+# Stack Policies protect resources from accidental deletion or replacement
+# for the definition of stack policies see:
+# see http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/protect-stack-resources.html#stack-policy-reference
+###########
+StackPolicy:
+    # All resources should be modifiable.
+  - Resource: "*"
+    Effect: Allow
+    Principal: "*"
+    Action:
+      - "Update:Modify"
+      - "Update:Delete"
+      - "Update:Replace"
+
+# End of Manifest
